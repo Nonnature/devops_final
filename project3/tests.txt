@@ -139,6 +139,101 @@ Part 4: Load Balancer Testing
    b) Generate traffic and observe packet flow
 
 
+Part 3 Extra Credit: Spanning Tree and ECMP Testing
+================================================================================
+
+1. Spanning Tree Testing (Loop-Free Broadcast)
+----------------------------------------------
+   Purpose: Verify broadcast traffic doesn't cause storms in looped topologies
+
+   Steps:
+   a) Start Floodlight controller:
+      $ java -jar FloodlightWithApps.jar -cf l3routing.prop
+
+   b) Start Mininet with a looped topology:
+      $ sudo ./run_mininet.py someloops
+      (or)
+      $ sudo ./run_mininet.py triangle
+
+   c) Check controller logs for spanning tree computation:
+      Look for: "Spanning tree edge: s1:X <-> s2:Y"
+      Look for: "Spanning tree computed successfully"
+
+   d) Verify broadcast rules are installed:
+      $ sudo ovs-ofctl -O OpenFlow13 dump-flows s1 | grep "dl_dst=ff:ff:ff:ff:ff:ff"
+
+   Expected Result:
+   - Broadcast rules with multiple output ports (spanning tree ports only)
+   - No broadcast loops (packets don't circulate infinitely)
+   - ARP resolution works correctly
+
+   e) Test ARP works (uses broadcast):
+      mininet> h1 ping -c 1 h2
+      (First ping triggers ARP which uses broadcast rules)
+
+2. ECMP Testing (Equal-Cost Multi-Path)
+---------------------------------------
+   Purpose: Verify traffic is distributed across multiple equal-cost paths
+
+   Steps:
+   a) Start Floodlight controller:
+      $ java -jar FloodlightWithApps.jar -cf l3routing.prop
+
+   b) Start Mininet with a topology that has multiple paths (e.g., mesh):
+      $ sudo ./run_mininet.py mesh,3
+
+   c) Check controller logs for ECMP path detection:
+      Look for: "ECMP: Installing 2 paths from sX to host Y"
+
+   d) Verify ECMP rules are installed:
+      $ sudo ovs-ofctl -O OpenFlow13 dump-flows s1
+
+   Expected Result: Should see rules with:
+   - TCP protocol match (nw_proto=6)
+   - TCP destination port match (tp_dst=0 for even, tp_dst=1 for odd)
+   - Higher priority than default rules (priority > 1)
+   - Different output ports for different TCP port matches
+
+   e) Test ECMP functionality with TCP traffic:
+      mininet> h1 curl h2:80      (uses even port path if 80 is even)
+      mininet> h1 curl h2:81      (uses odd port path if 81 is odd)
+
+   f) Alternative: Use iperf to generate TCP traffic:
+      mininet> h2 iperf -s &
+      mininet> h1 iperf -c h2 -p 5001
+
+3. Verifying Spanning Tree Prevents Broadcast Storms
+----------------------------------------------------
+   Steps:
+   a) Start with someloops topology (has multiple loops)
+   b) Run pingall to verify connectivity:
+      mininet> pingall
+
+   c) Check packet counts:
+      $ sudo ovs-ofctl dump-ports s1 -O OpenFlow13
+
+   Expected Result:
+   - 0% packet loss with pingall
+   - No excessive packet counts (would indicate broadcast storm)
+   - ARP completes quickly (no timeout)
+
+4. ECMP Path Verification with tcpdump
+--------------------------------------
+   Steps:
+   a) Start with mesh,3 topology
+   b) On switch s2, monitor traffic:
+      (In separate terminal)
+      $ sudo tcpdump -i s2-eth1 -n
+
+   c) Generate traffic with different TCP ports:
+      mininet> h1 nc -p 80 h3 8080 &
+      mininet> h1 nc -p 81 h3 8081 &
+
+   Expected Result:
+   - Traffic should be visible on different paths based on TCP port
+   - Even ports use one path, odd ports use another
+
+
 Debugging Tips
 ================================================================================
 
@@ -157,3 +252,9 @@ Debugging Tips
 
 5. Verify all hosts are discovered by checking Floodlight logs for
    "Host added" messages
+
+6. For Extra Credit features:
+   - Check logs for "Spanning tree" messages
+   - Check logs for "ECMP" messages
+   - Verify broadcast rules match dl_dst=ff:ff:ff:ff:ff:ff
+   - Verify ECMP rules match nw_proto=6 (TCP)

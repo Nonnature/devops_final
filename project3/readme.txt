@@ -184,6 +184,50 @@ Table 1 (L3Routing):
 - Handles actual packet delivery after address rewrite
 
 
+================================================================================
+PART 3 EXTRA CREDIT: SPANNING TREE AND ECMP
+================================================================================
+
+Extra Credit Feature 1: Spanning Tree (Loop-Free Broadcast)
+-----------------------------------------------------------
+The L3Routing module computes a spanning tree of the network topology to enable
+loop-free broadcast/flooding. This prevents broadcast storms in networks with
+loops like triangle and someloops topologies.
+
+Implementation:
+- computeSpanningTree(): Uses BFS from root switch (lowest DPID) to build tree
+- installBroadcastRules(): Installs rules matching dst_mac=ff:ff:ff:ff:ff:ff
+- Only forwards broadcast packets along spanning tree edges
+- Host ports are always included in the spanning tree
+
+Key Features:
+- Automatic spanning tree computation when topology changes
+- Root election based on lowest switch DPID
+- Broadcast rules have higher priority than unicast rules
+
+
+Extra Credit Feature 2: ECMP (Equal-Cost Multi-Path)
+----------------------------------------------------
+The L3Routing module implements ECMP to distribute traffic across multiple
+equal-cost paths. When multiple shortest paths exist between switches, the
+module installs rules that match on TCP port to distribute traffic.
+
+Implementation:
+- getAllShortestPathPorts(): Finds all output ports leading to shortest paths
+- installECMPHostRules(): Installs multiple rules for multi-path routing
+- Traffic distribution based on TCP destination port (even/odd)
+
+ECMP Rule Strategy:
+- TCP traffic with even destination port -> Path 1
+- TCP traffic with odd destination port -> Path 2
+- Non-TCP traffic -> Default path (Path 1)
+- Higher priority for TCP-specific rules
+
+Configuration:
+- ECMP_ENABLED = true (in L3Routing.java) to enable ECMP
+- SPANNING_TREE_ENABLED = true (in L3Routing.java) to enable Spanning Tree
+
+
 Code Attribution
 ================================================================================
 The base code structure was provided by:
@@ -196,6 +240,13 @@ The following code was implemented for this project:
 - switchAdded() implementation in LoadBalancer.java
 - receive() implementation in LoadBalancer.java
 - Helper methods: installHostRules(), removeHostRules(), updateAllRules()
+
+Extra Credit implementations:
+- computeSpanningTree(): Spanning tree computation using BFS
+- installBroadcastRules(): Broadcast rule installation for spanning tree
+- getAllShortestPathPorts(): Finding all equal-cost paths
+- computeDistance(): Distance calculation between switches
+- installECMPHostRules(): ECMP rule installation with TCP port matching
 
 
 Build and Run Instructions
