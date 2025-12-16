@@ -1,0 +1,165 @@
+================================================================================
+                        SECURITY VULNERABILITIES
+                        SDN Final Project - Fall 2025
+================================================================================
+
+Part 3: Layer-3 Shortest Path Routing Vulnerabilities
+================================================================================
+
+1. ARP Spoofing / ARP Cache Poisoning
+-------------------------------------
+   Description:
+   The current implementation relies on the ArpServer module to respond to
+   ARP requests. A malicious host could send spoofed ARP replies to poison
+   the ARP cache, causing traffic to be redirected to the attacker.
+
+   Impact:
+   - Man-in-the-middle attacks
+   - Traffic interception
+   - Denial of service
+
+   Mitigation:
+   - Implement ARP inspection
+   - Use static ARP entries for critical hosts
+   - Monitor for duplicate IP addresses
+
+2. No Authentication for Flow Rule Installation
+-----------------------------------------------
+   Description:
+   The controller installs flow rules without any authentication mechanism.
+   If an attacker gains access to the controller, they can install malicious
+   flow rules to redirect or drop traffic.
+
+   Impact:
+   - Traffic manipulation
+   - Network-wide denial of service
+   - Data exfiltration
+
+   Mitigation:
+   - Implement TLS between controller and switches
+   - Use role-based access control for controller operations
+   - Audit logging for all flow rule changes
+
+3. Denial of Service via Topology Manipulation
+----------------------------------------------
+   Description:
+   The controller recalculates all routes when topology changes occur.
+   An attacker could rapidly toggle links up/down to cause excessive
+   computation and flow rule updates, potentially overwhelming the controller.
+
+   Impact:
+   - Controller CPU exhaustion
+   - Network instability
+   - Delayed packet forwarding
+
+   Mitigation:
+   - Rate limit topology update processing
+   - Implement dampening for link state changes
+   - Add detection for abnormal topology change patterns
+
+4. IP Spoofing
+--------------
+   Description:
+   The routing rules only match on destination IP address. A malicious host
+   could spoof source IP addresses to impersonate other hosts or bypass
+   access controls.
+
+   Impact:
+   - Identity spoofing
+   - Bypass of IP-based access controls
+   - Difficult attack attribution
+
+   Mitigation:
+   - Add source IP validation rules
+   - Implement ingress filtering (BCP 38)
+   - Bind IP addresses to specific switch ports
+
+
+Part 4: Load Balancer Vulnerabilities
+================================================================================
+
+1. SYN Flood Attack
+-------------------
+   Description:
+   For each TCP SYN packet to a virtual IP, the controller installs two flow
+   rules. An attacker could send a large number of SYN packets with spoofed
+   source IPs/ports, causing the flow table to fill up and the controller
+   to be overwhelmed.
+
+   Impact:
+   - Flow table exhaustion
+   - Controller CPU/memory exhaustion
+   - Denial of service for legitimate connections
+
+   Mitigation:
+   - Implement SYN cookies at the controller
+   - Rate limit new connection installations per source IP
+   - Set maximum flow table entries per virtual IP
+   - Implement connection tracking with timeouts
+
+2. Virtual IP Discovery / Information Leakage
+---------------------------------------------
+   Description:
+   The controller responds to ARP requests for virtual IPs from any host.
+   An attacker could scan for virtual IPs to discover load-balanced services.
+
+   Impact:
+   - Service enumeration
+   - Targeted attacks on discovered services
+   - Information disclosure about network architecture
+
+   Mitigation:
+   - Only respond to ARP requests from authorized client subnets
+   - Implement rate limiting on ARP responses
+   - Log and alert on ARP scanning behavior
+
+3. Backend Server Enumeration
+-----------------------------
+   Description:
+   The round-robin load balancing is deterministic. An attacker could
+   establish multiple connections and observe responses to enumerate all
+   backend servers and their characteristics.
+
+   Impact:
+   - Backend server discovery
+   - Targeted attacks on specific backend servers
+   - Load balancer bypass
+
+   Mitigation:
+   - Add randomization to server selection
+   - Implement client IP-based session persistence
+   - Hide backend server identifiers in responses
+
+4. Connection Hijacking via Rule Timeout
+----------------------------------------
+   Description:
+   Connection-specific rules have a 20-second idle timeout. If a legitimate
+   connection goes idle, the rules are removed. An attacker who can predict
+   the connection parameters (IPs and ports) could potentially hijack the
+   connection by sending packets before the legitimate client resumes.
+
+   Impact:
+   - Session hijacking
+   - Data injection
+   - Connection disruption
+
+   Mitigation:
+   - Increase idle timeout for established connections
+   - Implement sequence number validation
+   - Use encrypted connections (TLS) at application layer
+
+5. No Rate Limiting on TCP RST Generation
+-----------------------------------------
+   Description:
+   The controller generates TCP RST packets for non-SYN TCP packets to
+   virtual IPs without connection state. This could be abused to generate
+   RST floods toward arbitrary targets by spoofing source addresses.
+
+   Impact:
+   - RST flood amplification
+   - Connection disruption for spoofed sources
+
+   Mitigation:
+   - Rate limit RST generation
+   - Verify source IP is in expected range
+   - Log excessive RST generation

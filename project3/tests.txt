@@ -1,0 +1,159 @@
+================================================================================
+                        TESTING AND DEBUGGING METHODS
+                        SDN Final Project - Fall 2025
+================================================================================
+
+Part 3: Layer-3 Shortest Path Routing Testing
+================================================================================
+
+1. Basic Connectivity Testing
+-----------------------------
+   Test Command: pingall
+
+   Steps:
+   a) Start Floodlight controller:
+      $ java -jar FloodlightWithApps.jar -cf l3routing.prop
+
+   b) Start Mininet with various topologies:
+      $ sudo ./run_mininet.py single,3
+      $ sudo ./run_mininet.py linear,3
+      $ sudo ./run_mininet.py tree,2
+      $ sudo ./run_mininet.py triangle
+      $ sudo ./run_mininet.py someloops
+      $ sudo ./run_mininet.py mesh,5
+      $ sudo ./run_mininet.py assign1
+
+   c) In Mininet CLI:
+      mininet> pingall
+
+   Expected Result: 0% packet loss for all topologies
+
+2. Flow Table Verification
+--------------------------
+   Test Command: ovs-ofctl dump-flows
+
+   Steps:
+   a) After starting controller and Mininet, run:
+      $ sudo ovs-ofctl -O OpenFlow13 dump-flows s1
+      $ sudo ovs-ofctl -O OpenFlow13 dump-flows s2
+      (repeat for all switches)
+
+   Expected Result: Flow rules matching destination IP addresses with
+   output actions to appropriate ports
+
+3. Link Failure Testing
+-----------------------
+   Test Commands: link down/up
+
+   Steps:
+   a) Start with triangle or someloops topology
+   b) Verify initial connectivity:
+      mininet> pingall
+   c) Take down a link:
+      mininet> link s1 s2 down
+   d) Verify connectivity is maintained (if alternate path exists):
+      mininet> pingall
+   e) Bring link back up:
+      mininet> link s1 s2 up
+   f) Verify connectivity:
+      mininet> pingall
+
+   Expected Result: Network should automatically reroute traffic
+
+4. Host Movement Testing
+------------------------
+   Steps:
+   a) Take down link between switch and host:
+      mininet> link s1 h1 down
+   b) Verify host is unreachable
+   c) Bring link back up:
+      mininet> link s1 h1 up
+   d) Verify host is reachable again
+
+5. Switch Removal Testing
+-------------------------
+   Steps:
+   a) In a separate terminal (not Mininet):
+      $ sudo ovs-vsctl del-br s2
+   b) Verify remaining hosts can still communicate (if path exists)
+
+
+Part 4: Load Balancer Testing
+================================================================================
+
+1. Basic Load Balancer Setup
+----------------------------
+   Steps:
+   a) Start controller with load balancer:
+      $ java -jar FloodlightWithApps.jar -cf loadbalancer.prop
+
+   b) Start Mininet:
+      $ sudo ./run_mininet.py single,3
+
+2. ARP Resolution Testing
+-------------------------
+   Steps:
+   a) From a host, ARP for virtual IP:
+      mininet> h1 arping -c 1 10.0.100.1
+
+   Expected Result: Should receive ARP reply with virtual MAC (00:00:01:00:00:01)
+
+3. HTTP Load Balancing Testing
+------------------------------
+   Steps:
+   a) Start web servers on backend hosts (automatically done by run_mininet.py)
+   b) Issue HTTP requests from client:
+      mininet> h1 curl 10.0.100.1
+      mininet> h1 curl 10.0.100.1
+      mininet> h1 curl 10.0.100.1
+
+   Expected Result: Requests should be distributed round-robin to h2 and h3
+
+4. Connection-Specific Rule Verification
+----------------------------------------
+   Steps:
+   a) Issue a curl request
+   b) Check flow tables:
+      $ sudo ovs-ofctl -O OpenFlow13 dump-flows s1
+
+   Expected Result: Should see connection-specific rules with:
+   - Higher priority than default rules
+   - IP/MAC rewrite actions
+   - 20 second idle timeout
+
+5. TCP Reset Testing
+--------------------
+   Steps:
+   a) Wait for connection-specific rules to timeout (20+ seconds of idle)
+   b) Try to send non-SYN TCP packet to virtual IP
+
+   Expected Result: Should receive TCP RST
+
+6. Packet Capture Debugging
+---------------------------
+   Tool: tcpdump
+
+   Steps:
+   a) In Mininet, run on a host:
+      mininet> h1 tcpdump -v -n -i h1-eth0 &
+   b) Generate traffic and observe packet flow
+
+
+Debugging Tips
+================================================================================
+
+1. Always restart Floodlight when switching topologies:
+   - Stop Mininet: exit
+   - Clean Mininet: sudo mn -c
+   - Stop Floodlight: Ctrl+C
+   - Restart Floodlight
+   - Restart Mininet
+
+2. Check controller logs for errors and warnings
+
+3. Use ovs-ofctl to verify flow rules are installed correctly
+
+4. Use tcpdump to trace packet flow through the network
+
+5. Verify all hosts are discovered by checking Floodlight logs for
+   "Host added" messages
