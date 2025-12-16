@@ -4,14 +4,22 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.openflow.protocol.OFMatch;
+import org.openflow.protocol.action.OFAction;
+import org.openflow.protocol.action.OFActionOutput;
+import org.openflow.protocol.instruction.OFInstruction;
+import org.openflow.protocol.instruction.OFInstructionApplyActions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import edu.wisc.cs.sdn.apps.util.Host;
+import edu.wisc.cs.sdn.apps.util.SwitchCommands;
 
 import net.floodlightcontroller.core.IFloodlightProviderService;
 import net.floodlightcontroller.core.IOFSwitch;
@@ -27,6 +35,7 @@ import net.floodlightcontroller.devicemanager.IDeviceListener;
 import net.floodlightcontroller.devicemanager.IDeviceService;
 import net.floodlightcontroller.linkdiscovery.ILinkDiscoveryListener;
 import net.floodlightcontroller.linkdiscovery.ILinkDiscoveryService;
+import net.floodlightcontroller.packet.Ethernet;
 import net.floodlightcontroller.routing.Link;
 
 public class L3Routing implements IFloodlightModule, IOFSwitchListener, 
@@ -72,8 +81,227 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
         
         /*********************************************************************/
         /* TODO: Initialize other class variables, if necessary              */
-        
+        // No additional initialization needed
         /*********************************************************************/
+	}
+
+	/**
+	 * Compute shortest paths from all switches to the target switch using BFS.
+	 * Returns a map of switchId -> (nextHopSwitchId, outputPort)
+	 */
+	private Map<Long, int[]> computeShortestPaths(long targetSwitchId) {
+		Map<Long, int[]> result = new HashMap<Long, int[]>();
+		Map<Long, IOFSwitch> switches = getSwitches();
+		Collection<Link> links = getLinks();
+
+		if (!switches.containsKey(targetSwitchId)) {
+			return result;
+		}
+
+		// Build adjacency list
+		Map<Long, List<Link>> adjacency = new HashMap<Long, List<Link>>();
+		for (Long switchId : switches.keySet()) {
+			adjacency.put(switchId, new ArrayList<Link>());
+		}
+
+		for (Link link : links) {
+			if (adjacency.containsKey(link.getSrc())) {
+				adjacency.get(link.getSrc()).add(link);
+			}
+		}
+
+		// BFS from target switch
+		Map<Long, Long> predecessor = new HashMap<Long, Long>();
+		Map<Long, Integer> predPort = new HashMap<Long, Integer>();
+		Queue<Long> queue = new LinkedList<Long>();
+
+		queue.add(targetSwitchId);
+		predecessor.put(targetSwitchId, targetSwitchId);
+
+		while (!queue.isEmpty()) {
+			Long current = queue.poll();
+
+			for (Link link : adjacency.get(current)) {
+				Long neighbor = link.getDst();
+				if (!predecessor.containsKey(neighbor)) {
+					predecessor.put(neighbor, current);
+					predPort.put(neighbor, link.getDstPort());
+					queue.add(neighbor);
+				}
+			}
+
+			// Also check reverse direction
+			for (Link link : links) {
+				if (link.getDst() == current && !predecessor.containsKey(link.getSrc())) {
+					predecessor.put(link.getSrc(), current);
+					predPort.put(link.getSrc(), link.getSrcPort());
+					queue.add(link.getSrc());
+				}
+			}
+		}
+
+		// Build result: for each switch, find the port to reach target
+		for (Long switchId : switches.keySet()) {
+			if (switchId == targetSwitchId || !predecessor.containsKey(switchId)) {
+				continue;
+			}
+
+			// Trace back to find next hop
+			Long current = switchId;
+			while (predecessor.get(current) != targetSwitchId && predecessor.get(current) != current) {
+				current = predecessor.get(current);
+			}
+
+			if (predecessor.get(current) == targetSwitchId) {
+				// current is the switch directly connected to target
+				// We need to find the port on switchId that leads towards target
+				Long trace = switchId;
+				int port = predPort.get(trace);
+				result.put(switchId, new int[]{port});
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Get the output port on srcSwitch to reach dstSwitch using BFS.
+	 */
+	private int getNextHopPort(long srcSwitchId, long dstSwitchId) {
+		if (srcSwitchId == dstSwitchId) {
+			return -1;
+		}
+
+		Map<Long, IOFSwitch> switches = getSwitches();
+		Collection<Link> links = getLinks();
+
+		// BFS from src to dst
+		Map<Long, Long> predecessor = new HashMap<Long, Long>();
+		Map<Long, Integer> portToNext = new HashMap<Long, Integer>();
+		Queue<Long> queue = new LinkedList<Long>();
+
+		queue.add(srcSwitchId);
+		predecessor.put(srcSwitchId, srcSwitchId);
+
+		while (!queue.isEmpty()) {
+			Long current = queue.poll();
+
+			if (current == dstSwitchId) {
+				break;
+			}
+
+			// Check all links from current switch
+			for (Link link : links) {
+				if (link.getSrc() == current && !predecessor.containsKey(link.getDst())) {
+					predecessor.put(link.getDst(), current);
+					portToNext.put(link.getDst(), link.getSrcPort());
+					queue.add(link.getDst());
+				}
+				if (link.getDst() == current && !predecessor.containsKey(link.getSrc())) {
+					predecessor.put(link.getSrc(), current);
+					portToNext.put(link.getSrc(), link.getDstPort());
+					queue.add(link.getSrc());
+				}
+			}
+		}
+
+		if (!predecessor.containsKey(dstSwitchId)) {
+			return -1;
+		}
+
+		// Trace back to find the first hop from src
+		Long current = dstSwitchId;
+		while (predecessor.get(current) != srcSwitchId) {
+			current = predecessor.get(current);
+		}
+
+		return portToNext.get(current);
+	}
+
+	/**
+	 * Install routing rules for a specific host on all switches.
+	 */
+	private void installHostRules(Host host) {
+		if (host == null || !host.isAttachedToSwitch()) {
+			return;
+		}
+
+		IOFSwitch hostSwitch = host.getSwitch();
+		int hostPort = host.getPort();
+		long hostMac = host.getMACAddress();
+		Integer hostIp = host.getIPv4Address();
+
+		if (hostSwitch == null || hostIp == null) {
+			return;
+		}
+
+		Map<Long, IOFSwitch> switches = getSwitches();
+
+		for (IOFSwitch sw : switches.values()) {
+			// Create match criteria for destination IP
+			OFMatch match = new OFMatch();
+			match.setDataLayerType(Ethernet.TYPE_IPv4);
+			match.setNetworkDestination(hostIp);
+
+			int outPort;
+			if (sw.getId() == hostSwitch.getId()) {
+				// Direct connection to host
+				outPort = hostPort;
+			} else {
+				// Find path through network
+				outPort = getNextHopPort(sw.getId(), hostSwitch.getId());
+				if (outPort == -1) {
+					continue;
+				}
+			}
+
+			// Create action to output packet
+			OFAction outputAction = new OFActionOutput(outPort);
+			OFInstruction instruction = new OFInstructionApplyActions(
+					Arrays.asList(outputAction));
+
+			// Install the rule
+			SwitchCommands.installRule(sw, this.table,
+					SwitchCommands.DEFAULT_PRIORITY, match,
+					Arrays.asList(instruction));
+		}
+	}
+
+	/**
+	 * Remove routing rules for a specific host from all switches.
+	 */
+	private void removeHostRules(Host host) {
+		if (host == null) {
+			return;
+		}
+
+		Integer hostIp = host.getIPv4Address();
+		if (hostIp == null) {
+			return;
+		}
+
+		Map<Long, IOFSwitch> switches = getSwitches();
+
+		for (IOFSwitch sw : switches.values()) {
+			OFMatch match = new OFMatch();
+			match.setDataLayerType(Ethernet.TYPE_IPv4);
+			match.setNetworkDestination(hostIp);
+
+			SwitchCommands.removeRules(sw, this.table, match);
+		}
+	}
+
+	/**
+	 * Update routing rules for all hosts.
+	 */
+	private void updateAllRules() {
+		// Remove all existing rules first, then reinstall
+		for (Host host : getHosts()) {
+			if (host.isAttachedToSwitch()) {
+				removeHostRules(host);
+				installHostRules(host);
+			}
+		}
 	}
 
 	/**
@@ -90,10 +318,10 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Perform other tasks, if necessary                           */
-		
+		// No additional startup tasks needed
 		/*********************************************************************/
 	}
-	
+
 	/**
 	 * Get the table in which this application installs rules.
 	 */
@@ -132,10 +360,10 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		{
 			log.info(String.format("Host %s added", host.getName()));
 			this.knownHosts.put(device, host);
-			
+
 			/*****************************************************************/
 			/* TODO: Update routing: add rules to route to new host          */
-			
+			installHostRules(host);
 			/*****************************************************************/
 		}
 	}
@@ -154,12 +382,12 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			this.knownHosts.put(device, host);
 		}
 		
-		log.info(String.format("Host %s is no longer attached to a switch", 
+		log.info(String.format("Host %s is no longer attached to a switch",
 				host.getName()));
-		
+
 		/*********************************************************************/
 		/* TODO: Update routing: remove rules to route to host               */
-		
+		removeHostRules(host);
 		/*********************************************************************/
 	}
 
@@ -184,10 +412,11 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		}
 		log.info(String.format("Host %s moved to s%d:%d", host.getName(),
 				host.getSwitch().getId(), host.getPort()));
-		
+
 		/*********************************************************************/
 		/* TODO: Update routing: change rules to route to host               */
-		
+		removeHostRules(host);
+		installHostRules(host);
 		/*********************************************************************/
 	}
 	
@@ -195,15 +424,15 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
      * Event handler called when a switch joins the network.
      * @param DPID for the switch
      */
-	@Override		
-	public void switchAdded(long switchId) 
+	@Override
+	public void switchAdded(long switchId)
 	{
 		IOFSwitch sw = this.floodlightProv.getSwitch(switchId);
 		log.info(String.format("Switch s%d added", switchId));
-		
+
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-
+		updateAllRules();
 		/*********************************************************************/
 	}
 
@@ -212,14 +441,14 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	 * @param DPID for the switch
 	 */
 	@Override
-	public void switchRemoved(long switchId) 
+	public void switchRemoved(long switchId)
 	{
 		IOFSwitch sw = this.floodlightProv.getSwitch(switchId);
 		log.info(String.format("Switch s%d removed", switchId));
-		
+
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-		
+		updateAllRules();
 		/*********************************************************************/
 	}
 
@@ -242,15 +471,15 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			// Otherwise, the link is between two switches
 			else
 			{
-				log.info(String.format("Link s%s:%d -> %s:%d updated", 
+				log.info(String.format("Link s%s:%d -> %s:%d updated",
 					update.getSrc(), update.getSrcPort(),
 					update.getDst(), update.getDstPort()));
 			}
 		}
-		
+
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-		
+		updateAllRules();
 		/*********************************************************************/
 	}
 
