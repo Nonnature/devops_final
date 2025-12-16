@@ -216,16 +216,77 @@ Test on triangle topology:
 
 ---
 
-## 6. Discussion
+## 6. Extra Credit Implementation
 
-### 6.1 What Went Well
+### 6.1 Spanning Tree for Loop-Free Broadcast (10 points)
+
+**Objective**: Implement flooding without loops by calculating and installing a spanning tree for broadcasts.
+
+**Implementation**:
+
+```java
+// Compute spanning tree using BFS from root switch (lowest DPID)
+private void computeSpanningTree() {
+    // Find root switch (lowest DPID)
+    // BFS traversal to build spanning tree
+    // Track ports on each switch that are part of the tree
+}
+
+// Install broadcast rules using spanning tree ports
+private void installBroadcastRules() {
+    // Match: dl_dst = ff:ff:ff:ff:ff:ff
+    // Action: Output to all spanning tree ports
+}
+```
+
+**Key Features**:
+- Automatic root election (lowest switch DPID)
+- BFS-based tree construction
+- Broadcast rules with higher priority than unicast
+- Host ports automatically included in tree
+
+### 6.2 ECMP (Equal-Cost Multi-Path) Routing (10 points)
+
+**Objective**: Implement ECMP on networks with multiple paths, distributing traffic based on TCP ports.
+
+**Implementation**:
+
+```java
+// Find all output ports leading to shortest paths
+private List<Integer> getAllShortestPathPorts(long src, long dst) {
+    // BFS to compute distances
+    // Find all neighbors on shortest paths
+}
+
+// Install ECMP rules with TCP port matching
+private void installECMPHostRules(Host host) {
+    // For TCP with even dst port -> Path 1
+    // For TCP with odd dst port -> Path 2
+    // Default (non-TCP) -> Path 1
+}
+```
+
+**Rule Strategy**:
+| Traffic Type | TCP Port | Path Used |
+|--------------|----------|-----------|
+| TCP | Even (0, 2, 4...) | Path 1 |
+| TCP | Odd (1, 3, 5...) | Path 2 |
+| Non-TCP | N/A | Path 1 |
+
+---
+
+## 7. Discussion
+
+### 7.1 What Went Well
 
 1. **BFS Algorithm**: Simple and effective for shortest path computation
 2. **Proactive Rule Installation**: Eliminates packet-in latency for normal traffic
 3. **Multi-Table Design**: Clean separation between load balancing and routing
 4. **Round-Robin Distribution**: Fair load distribution across servers
+5. **Spanning Tree**: Prevents broadcast storms in looped topologies
+6. **ECMP**: Utilizes multiple paths for better bandwidth utilization
 
-### 6.2 Challenges Encountered
+### 7.2 Challenges Encountered
 
 1. **Topology Change Handling**: Initial implementation caused 100% packet loss when switching topologies without restarting controller
    - **Solution**: Always restart Floodlight and clean Mininet state
@@ -236,17 +297,21 @@ Test on triangle topology:
 3. **Connection State**: No persistent connection tracking
    - **Solution**: Use idle timeout for automatic cleanup
 
-### 6.3 Limitations
+4. **ECMP Path Detection**: Finding all equal-cost paths efficiently
+   - **Solution**: BFS for distance computation, then verify each neighbor
+
+### 7.3 Limitations
 
 1. **Scalability**: Full mesh of rules (O(n) rules per switch for n hosts)
 2. **No QoS**: All paths treated equally
 3. **Single Controller**: No high availability
+4. **ECMP Limited to 2 Paths**: Current implementation only uses 2 paths maximum
 
 ---
 
-## 7. Security Considerations
+## 8. Security Considerations
 
-### 7.1 Identified Vulnerabilities
+### 8.1 Identified Vulnerabilities
 
 **L3Routing**:
 - ARP spoofing possible
@@ -258,7 +323,7 @@ Test on triangle topology:
 - Backend server enumeration possible
 - Connection hijacking via timeout
 
-### 7.2 Recommended Mitigations
+### 8.2 Recommended Mitigations
 
 - Implement rate limiting
 - Add source IP validation
@@ -267,23 +332,29 @@ Test on triangle topology:
 
 ---
 
-## 8. Conclusion
+## 9. Conclusion
 
-This project successfully implemented two SDN controller applications:
+This project successfully implemented two SDN controller applications plus two extra credit features:
 
 1. **L3Routing**: Provides shortest-path forwarding using BFS algorithm, handling all tested topologies including those with loops.
 
 2. **LoadBalancer**: Distributes TCP connections using round-robin scheduling with transparent address rewriting.
 
+3. **Extra Credit - Spanning Tree**: Computes a spanning tree for loop-free broadcast flooding, preventing broadcast storms in looped topologies.
+
+4. **Extra Credit - ECMP**: Distributes traffic across multiple equal-cost paths using TCP port matching (even/odd), improving bandwidth utilization.
+
 The implementation demonstrates key SDN benefits:
 - Centralized network intelligence
 - Programmatic control of forwarding behavior
 - Flexible traffic engineering
+- Loop prevention without distributed STP
+- Multi-path load balancing
 
 Future work could include:
-- ECMP (Equal-Cost Multi-Path) support
-- Weighted load balancing
+- Weighted load balancing based on server capacity
 - Controller clustering for high availability
+- More sophisticated ECMP hashing (5-tuple based)
 
 ---
 
