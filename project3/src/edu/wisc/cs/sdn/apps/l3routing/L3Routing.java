@@ -68,11 +68,11 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
     private Map<Long, Set<Integer>> spanningTreePorts;
 
     // EXTRA CREDIT: Enable ECMP (Equal-Cost Multi-Path) routing
-    // Set to false to test basic routing first
+    // DISABLED: TCP port matching implementation has issues
     private static final boolean ECMP_ENABLED = false;
 
     // EXTRA CREDIT: Enable Spanning Tree for loop-free broadcast
-    // Set to false to test basic routing first
+    // DISABLED: Conflicts with ArpServer module that handles ARP via controller
     private static final boolean SPANNING_TREE_ENABLED = false;
 
 	/**
