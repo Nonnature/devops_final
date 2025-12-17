@@ -68,12 +68,10 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
     private Map<Long, Set<Integer>> spanningTreePorts;
 
     // EXTRA CREDIT: Enable ECMP (Equal-Cost Multi-Path) routing
-    // DISABLED: TCP port matching implementation has issues
-    private static final boolean ECMP_ENABLED = false;
+    private static final boolean ECMP_ENABLED = true;
 
     // EXTRA CREDIT: Enable Spanning Tree for loop-free broadcast
-    // DISABLED: Conflicts with ArpServer module that handles ARP via controller
-    private static final boolean SPANNING_TREE_ENABLED = false;
+    private static final boolean SPANNING_TREE_ENABLED = true;
 
 	/**
      * Loads dependencies and initializes data structures.
@@ -423,6 +421,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	/**
 	 * EXTRA CREDIT: Install broadcast rules that forward only along spanning tree edges.
 	 * This prevents broadcast storms in networks with loops.
+	 * NOTE: Only matches IPv4 broadcasts, not ARP (ARP is handled by ArpServer via controller)
 	 */
 	private void installBroadcastRules() {
 		Map<Long, IOFSwitch> switches = getSwitches();
@@ -435,8 +434,10 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 				continue;
 			}
 
-			// Create match for broadcast traffic (destination MAC = ff:ff:ff:ff:ff:ff)
+			// Create match for IPv4 broadcast traffic only (not ARP!)
+			// ARP broadcasts must go to controller for ArpServer to handle
 			OFMatch match = new OFMatch();
+			match.setDataLayerType(Ethernet.TYPE_IPv4);  // Only IPv4, not ARP
 			match.setDataLayerDestination("ff:ff:ff:ff:ff:ff");
 
 			// Create output actions for all spanning tree ports
@@ -581,7 +582,11 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	/**
 	 * EXTRA CREDIT: Install ECMP rules for a host.
 	 * When multiple equal-cost paths exist, install rules that match on TCP port
-	 * (even/odd) to distribute traffic across paths.
+	 * to distribute traffic across paths.
+	 *
+	 * Strategy: Use specific TCP destination ports to route to different paths
+	 * - Even ports (80, 8080, 22, etc.) -> Path 1
+	 * - Odd ports (443, 8081, 23, etc.) -> Path 2
 	 */
 	private void installECMPHostRules(Host host) {
 		if (host == null || !host.isAttachedToSwitch()) {
@@ -638,37 +643,36 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 					log.info(String.format("ECMP: Installing %d paths from s%d to host %s",
 							pathPorts.size(), sw.getId(), host.getName()));
 
-					// Install rules for TCP traffic split by port number (even/odd)
-					for (int i = 0; i < pathPorts.size() && i < 2; i++) {
-						// Rule for TCP with port matching
-						OFMatch tcpMatch = new OFMatch();
-						tcpMatch.setDataLayerType(Ethernet.TYPE_IPv4);
-						tcpMatch.setNetworkProtocol((byte) 6); // TCP
-						tcpMatch.setNetworkDestination(hostIp);
+					// Define specific ports for each path
+					// Path 1 (even-ish): ports 80, 8080, 22, 20, 25
+					// Path 2 (odd-ish): ports 443, 8081, 23, 21, 110
+					int[][] portGroups = {
+						{80, 8080, 22, 20, 25, 53},      // Path 1 ports
+						{443, 8081, 23, 21, 110, 143}   // Path 2 ports
+					};
 
-						// Match on TCP destination port: even (i=0) or odd (i=1)
-						// We use a bitmask approach: port & 1 == i
-						// For simplicity, we'll match on specific port ranges
-						if (i == 0) {
-							// Even ports: match ports 0-32767 with mask
-							tcpMatch.setTransportDestination((short) 0);
-							// Use wildcard for lower bit = 0 (even)
-						} else {
-							// Odd ports: match ports with lower bit = 1
-							tcpMatch.setTransportDestination((short) 1);
+					// Install rules for specific TCP destination ports
+					for (int pathIdx = 0; pathIdx < Math.min(pathPorts.size(), 2); pathIdx++) {
+						for (int tcpPort : portGroups[pathIdx]) {
+							OFMatch tcpMatch = new OFMatch();
+							tcpMatch.setDataLayerType(Ethernet.TYPE_IPv4);
+							tcpMatch.setNetworkProtocol((byte) 6); // TCP
+							tcpMatch.setNetworkDestination(hostIp);
+							tcpMatch.setTransportDestination((short) tcpPort);
+
+							OFAction outputAction = new OFActionOutput(pathPorts.get(pathIdx));
+							OFInstruction instruction = new OFInstructionApplyActions(
+									Arrays.asList(outputAction));
+
+							// Higher priority for specific port rules
+							SwitchCommands.installRule(sw, this.table,
+									(short)(SwitchCommands.DEFAULT_PRIORITY + 2), tcpMatch,
+									Arrays.asList(instruction));
 						}
-
-						OFAction outputAction = new OFActionOutput(pathPorts.get(i));
-						OFInstruction instruction = new OFInstructionApplyActions(
-								Arrays.asList(outputAction));
-
-						// Higher priority for ECMP TCP rules
-						SwitchCommands.installRule(sw, this.table,
-								(short)(SwitchCommands.DEFAULT_PRIORITY + 2), tcpMatch,
-								Arrays.asList(instruction));
 					}
 
-					// Also install default rule for non-TCP traffic (use first path)
+					// Install default rule for all other traffic (use first path)
+					// This handles ICMP (ping), UDP, and TCP on non-specified ports
 					OFMatch defaultMatch = new OFMatch();
 					defaultMatch.setDataLayerType(Ethernet.TYPE_IPv4);
 					defaultMatch.setNetworkDestination(hostIp);
